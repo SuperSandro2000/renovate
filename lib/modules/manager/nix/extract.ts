@@ -25,9 +25,9 @@ export async function extractPackageFile(
 
   const deps: PackageDependency[] = [];
 
-  const match = nixpkgsRegex.exec(content);
-  if (match?.groups) {
-    const { ref } = match.groups;
+  const nixpkgsMatch = nixpkgsRegex.exec(content);
+  if (nixpkgsMatch?.groups) {
+    const { ref } = nixpkgsMatch.groups;
     deps.push({
       depName: 'nixpkgs',
       currentValue: ref,
@@ -62,8 +62,11 @@ export async function extractPackageFile(
   }
 
   for (const [depName, flakeInput] of Object.entries(flakeLock.nodes)) {
-    // the root input is a magic string for the entrypoint and only references other flake inputs
     if (depName === 'root') {
+      // the root input is a magic string for the entrypoint and only references other flake inputs
+      continue;
+    } else if (depName === 'nixpkgs' && nixpkgsMatch?.groups) {
+      // nixpkgs was hit from flake.nix analysis; can be skipped here
       continue;
     }
 
@@ -93,7 +96,6 @@ export async function extractPackageFile(
       case 'github':
         deps.push({
           depName,
-          currentValue: flakeOriginal.ref,
           currentDigest: flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'github.com'}/${flakeOriginal.owner}/${flakeOriginal.repo}`,
@@ -102,7 +104,6 @@ export async function extractPackageFile(
       case 'gitlab':
         deps.push({
           depName,
-          currentValue: flakeOriginal.ref,
           currentDigest: flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'gitlab.com'}/${flakeOriginal.owner}/${flakeOriginal.repo}`,
@@ -111,7 +112,6 @@ export async function extractPackageFile(
       case 'git':
         deps.push({
           depName,
-          currentValue: flakeOriginal.ref,
           currentDigest: flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: flakeOriginal.url,
@@ -120,7 +120,6 @@ export async function extractPackageFile(
       case 'sourcehut':
         deps.push({
           depName,
-          currentValue: flakeOriginal.ref,
           currentDigest: flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'git.sr.ht'}/${flakeOriginal.owner}/${flakeOriginal.repo}`,
@@ -129,7 +128,6 @@ export async function extractPackageFile(
       case 'tarball':
         deps.push({
           depName,
-          currentValue: flakeLocked.ref,
           currentDigest: flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           // type tarball always contains this link
