@@ -33,10 +33,17 @@ export async function extractPackageFile(
   const deps: PackageDependency[] = [];
 
   const nixpkgsMatch = nixpkgsRegex.exec(content);
+  let hasPackageFileNixpkgs = false;
   if (nixpkgsMatch?.groups) {
     const { ref } = nixpkgsMatch.groups;
     // only add when we matched a ref
     if (ref !== undefined) {
+      // Note: it is perfectly valid for a nix flake to have multiple nixpkgs inputs, and for the nixpkgs input to be
+      // named something other than `nixpkgs`.  Neither of those cases are supported here; it is assumed that the input
+      // matching the `nixpkgsRegex` is named `nixpkgs` and that it's the only one that matches the RE.  This could be
+      // improved in the future by using `nix` to actually evaluate the `flake.nix` file and then this manager could be
+      // fully capable of understanding all input packages, (eg. `nix eval --file flake.nix --json inputs`), and then
+      // only rely on the lock file for `lockedVersion` inputs...
       deps.push({
         depName: 'nixpkgs',
         currentValue: ref,
@@ -44,6 +51,7 @@ export async function extractPackageFile(
         packageName: 'https://github.com/NixOS/nixpkgs',
         versioning: nixpkgsVersioning,
       });
+      hasPackageFileNixpkgs = true;
     }
   }
 
@@ -77,6 +85,12 @@ export async function extractPackageFile(
       continue;
     }
 
+    if (depName === 'nixpkgs' && hasPackageFileNixpkgs) {
+      // Prevent `nixpkgs` from appearing as a dependency twice; once when `nixpkgsMatch` is matched, and once from the
+      // flake.lock file.
+      continue;
+    }
+
     // skip all locked and transitivie nodes as they cannot be updated by regular means
     if (!(depName in rootInputs)) {
       continue;
@@ -107,45 +121,61 @@ export async function extractPackageFile(
       continue;
     }
 
+    // Mapping nix flake options to the dependency outputs:
+    //
+    // currentValue -- should be set to the package file's description of the target version; typically this doesn't
+    // exist for a nix input reference, but some situations like a branch reference (eg.
+    // `github:NixOS/nixpkgs/nixos-20.09`) will have a currentValue (eg. `nixos-20.09`).  Most often undefined,
+    // representing a floating dependency.
+    //
+    // currentDigest -- should be set to the package file's digest of the target if the target is pinned.  Not typical
+    // in a nix flake input, but would exist if the flake input is pinned (eg.
+    // `github:NixOS/nixpkgs/a3a3dda3bacf61e8a39258a0ed9c924eeca8e293`).
+    //
+    // lockedVersion -- should be set to the digest that the package has currently floated to and been locked by the
+    // lockfile.  Typically this is read from the nix flake.lock, but, if `currentDigest` is provided and the dependency
+    // is pinned then we don't indicate it as locked, which allows renovate to recognize that the package file can be
+    // updated to change this dependency.  Typically, renovate will only update this dependency by a lock file update.
+
     switch (flakeLocked.type) {
       case 'github':
         deps.push({
           depName,
           currentValue: flakeOriginal.ref,
-          currentDigest: flakeLocked.rev,
+          currentDigest: flakeOriginal.rev,
+          lockedVersion: flakeOriginal.rev ? undefined : flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'github.com'}/${flakeOriginal.owner}/${flakeOriginal.repo}`,
-          rangeStrategy: 'update-lockfile',
         });
         break;
       case 'gitlab':
         deps.push({
           depName,
           currentValue: flakeOriginal.ref,
-          currentDigest: flakeLocked.rev,
+          currentDigest: flakeOriginal.rev,
+          lockedVersion: flakeOriginal.rev ? undefined : flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'gitlab.com'}/${decodeURIComponent(flakeOriginal.owner!)}/${flakeOriginal.repo}`,
-          rangeStrategy: 'update-lockfile',
         });
         break;
       case 'git':
         deps.push({
           depName,
           currentValue: flakeOriginal.ref,
-          currentDigest: flakeLocked.rev,
+          currentDigest: flakeOriginal.rev,
+          lockedVersion: flakeOriginal.rev ? undefined : flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: flakeOriginal.url,
-          rangeStrategy: 'update-lockfile',
         });
         break;
       case 'sourcehut':
         deps.push({
           depName,
           currentValue: flakeOriginal.ref,
-          currentDigest: flakeLocked.rev,
+          currentDigest: flakeOriginal.rev,
+          lockedVersion: flakeOriginal.rev ? undefined : flakeLocked.rev,
           datasource: GitRefsDatasource.id,
           packageName: `https://${flakeOriginal.host ?? 'git.sr.ht'}/${flakeOriginal.owner}/${flakeOriginal.repo}`,
-          rangeStrategy: 'update-lockfile',
         });
         break;
       case 'tarball':
@@ -161,23 +191,22 @@ export async function extractPackageFile(
           deps.push({
             depName,
             currentValue: branch,
-            currentDigest: rev,
+            lockedVersion: rev,
             datasource: GitRefsDatasource.id,
             packageName: 'https://github.com/NixOS/nixpkgs',
-            rangeStrategy: 'update-lockfile',
           });
         } else {
           deps.push({
             depName,
-            currentValue: flakeLocked.ref,
-            currentDigest: flakeLocked.rev,
+            currentValue: flakeOriginal.ref,
+            currentDigest: flakeOriginal.rev,
+            lockedVersion: flakeOriginal.rev ? undefined : flakeLocked.rev,
             datasource: GitRefsDatasource.id,
             // type tarball always contains this link
             packageName: flakeOriginal.url!.replace(
               lockableHTTPTarballProtocol,
               'https://$<domain>/$<owner>/$<repo>',
             ),
-            rangeStrategy: 'update-lockfile',
           });
         }
         break;
